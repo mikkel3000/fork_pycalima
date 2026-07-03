@@ -1,51 +1,59 @@
 ========
 PyCalima
 ========
-Simple python interface against the
+Async protocol helpers for the
 `Pax Calima® <http://www.pax.se/sv/produkt/calima/pax-calima-flakt>`_
 bathroom fan created and sold by `Pax® <http://www.pax.se>`_
 
-This module provides a very simple interface against the various
-GATT characteristics of the Calima fan, most importantly it handles the
-authentication so values are actually persisted within the fan.
+This module provides read and write helpers for the various GATT
+characteristics of the Calima fan. It is transport-agnostic: callers
+provide async read/write functions, so the same protocol code can be used
+from Home Assistant's Bluetooth stack.
 
-Uses `BluePy <https://github.com/IanHarvey/bluepy>`_
+It no longer uses BluePy or opens Bluetooth connections itself.
 
 
 Installation
 ----------
 I did this on Raspberry Pi Zero W but it can be done on any computer which support BluePy (and has a bluetooth dongle).
 
-You will need to install python3 which is Python v 3.4 if you install it from apt-get repos.
-   $apt install python3 python3-pip libglib2.0-dev
+Use uv for local development:
 
-Then install BluePy
-    $sudo pip3 install bluepy
+.. code:: shell
 
-Clone this repo and then user run.py script to set the basic settings for your Calima. They will be applied if Calima was power cycled. Afterwards it will just poll Calima and output the data. You can pipe it to your home autmation scripts or or cronjob it to a file. 
+  uv run python -m unittest discover -s tests -v
+
+Manual BLE smoke test:
+
+.. code:: shell
+
+  uv run --extra ble python examples/read_ble.py --list
+  uv run --extra ble python examples/read_ble.py --name "PAX" --config
+
+This test is read-first. It only writes to the fan if you explicitly pass
+``--pin`` to authenticate:
+
+.. code:: shell
+
+  uv run --extra ble python examples/read_ble.py --name "PAX" --pin 123456 --config
 
 Demo usage
 ----------
 .. code:: python
 
-  from Calima import Calima
+  from pycalima import Calima
 
-  fan = Calima("MA:CC:AD:DR:ES:SS", "012345")
-  print(fan.getAlias())
+  fan = Calima(read_uuid, write_uuid)
+  print(await fan.getAlias())
 
 Command line tool
 -----------------
-Pretty useful command line tool which among other things can print all
-the characteristics of a fan. It can also search for available fans 
-if you don't know the MAC address.
-
-For more on using the tool, just run `calima -h`.
+The old BluePy command line tool has been removed from the supported API.
 
 Debugging
 -------------
-Set this to True in pycalima/Calima.py file if want to see more verbose output.
-
-  self._debug = False
+Run the unit tests first; BLE-level logging belongs in the caller's
+transport layer.
 
 Documentation
 -------------

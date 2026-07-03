@@ -1,43 +1,81 @@
-#!/usr/bin/env python3.6
-
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-
-from struct import pack, unpack
-import time
-import datetime
-import bluepy.btle as ble
 import binascii
+import datetime
 import math
-from collections import namedtuple
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from struct import pack, unpack
 
-Fanspeeds = namedtuple('Fanspeeds', 'Humidity Light Trickle')
-Fanspeeds.__new__.__defaults__ = (2250, 1625, 1000)
-Time = namedtuple('Time', 'DayOfWeek Hour Minute Second')
-Sensitivity = namedtuple('Sensitivity', 'HumidityOn Humidity LightOn Light')
-LightSensorSettings = namedtuple('LightSensorSettings', 'DelayedStart RunningTime')
-HeatDistributorSettings = namedtuple('HeatDistributorSettings', 'TemperatureLimit FanSpeedBelow FanSpeedAbove')
-SilentHours = namedtuple('SilentHours', 'On StartingHour StartingMinute EndingHour EndingMinute')
-TrickleDays = namedtuple('TrickleDays', 'Weekdays Weekends')
-BoostMode = namedtuple('BoostMode', 'OnOff Speed Seconds')
+ReadUuid = Callable[[str], Awaitable[bytes]]
+WriteUuid = Callable[[str, bytes], Awaitable[None]]
 
-FanState = namedtuple('FanState', 'Humidity Temp Light RPM Mode')
 
-# Stolen defines for each characteristic (taken from a decompiled Android App)
+@dataclass(frozen=True)
+class Fanspeeds:
+    Humidity: int = 2250
+    Light: int = 1625
+    Trickle: int = 1000
+
+
+@dataclass(frozen=True)
+class Time:
+    DayOfWeek: int
+    Hour: int
+    Minute: int
+    Second: int
+
+
+@dataclass(frozen=True)
+class Sensitivity:
+    HumidityOn: int
+    Humidity: int
+    LightOn: int
+    Light: int
+
+
+@dataclass(frozen=True)
+class LightSensorSettings:
+    DelayedStart: int
+    RunningTime: int
+
+
+@dataclass(frozen=True)
+class HeatDistributorSettings:
+    TemperatureLimit: int
+    FanSpeedBelow: int
+    FanSpeedAbove: int
+
+
+@dataclass(frozen=True)
+class SilentHours:
+    On: int
+    StartingHour: int
+    StartingMinute: int
+    EndingHour: int
+    EndingMinute: int
+
+
+@dataclass(frozen=True)
+class TrickleDays:
+    Weekdays: int
+    Weekends: int
+
+
+@dataclass(frozen=True)
+class BoostMode:
+    OnOff: int
+    Speed: int
+    Seconds: int
+
+
+@dataclass(frozen=True)
+class FanState:
+    Humidity: float
+    Temp: float
+    Light: int
+    RPM: int
+    Mode: str
+
+
 CHARACTERISTIC_APPEARANCE = "00002a01-0000-1000-8000-00805f9b34fb"
 CHARACTERISTIC_AUTOMATIC_CYCLES = "f508408a-508b-41c6-aa57-61d1fd0d5c39"
 CHARACTERISTIC_BASIC_VENTILATION = "faa49e09-a79c-4725-b197-bdc57c67dc32"
@@ -65,230 +103,237 @@ CHARACTERISTIC_STATUS = "25a824ad-3021-4de9-9f2f-60cf8d17bded"
 CHARACTERISTIC_TEMP_HEAT_DISTRIBUTOR = "a22eae12-dba8-49f3-9c69-1721dcff1d96"
 CHARACTERISTIC_TIME_FUNCTIONS = "49c616de-02b1-4b67-b237-90f66793a6f2"
 
-def FindCalimas():
-    scanner = ble.Scanner()
-    devices = scanner.scan()
-    calimas = filter(lambda dev: dev.addr[0:8] == "58:2b:db", devices)
-    return tuple(map(lambda dev: dev.addr, calimas))
 
 class Calima:
+    """Async, transport-agnostic protocol implementation for Pax Calima-like fans."""
 
-    def __init__(self, addr, pin):
-        # Set debug to true if you want more verbose output
-        self._debug = False
-        self.conn = ble.Peripheral(deviceAddr=addr)
-        self.setAuth(pin)
+    def __init__(self, read_uuid: ReadUuid, write_uuid: WriteUuid):
+        self._read_uuid = read_uuid
+        self._write_uuid = write_uuid
 
-    def __del__(self):
-        self.conn.disconnect()
+    @staticmethod
+    def _b_to_str(value: bytes) -> str:
+        return binascii.b2a_hex(value).decode("utf-8")
 
-    def disconnect(self):
-        self.conn.disconnect()
+    async def getDeviceName(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_DEVICE_NAME)).decode("ascii")
 
-    def _bToStr(self, val):
-        return binascii.b2a_hex(val).decode('utf-8')
+    async def getModelNumber(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_MODEL_NUMBER)).decode("ascii")
 
-    def _readUUID(self, uuid):
-        val = self.conn.getCharacteristics(uuid=uuid)[0].read()
-        if (self._debug):
-            print("[Calima] [R] %s = %s" % (uuid, self._bToStr(val)))
+    async def getSerialNumber(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_SERIAL_NUMBER)).decode("ascii")
 
-        return val
+    async def getHardwareRevision(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_HARDWARE_REVISION)).decode("ascii")
 
-    def _readHandle(self, handle):
-        val = self.conn.readCharacteristic(handle)
-        if (self._debug):
-            print("[Calima] [R] %s = %s" % (hex(handle), self._bToStr(val)))
-        return val
+    async def getFirmwareRevision(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_FIRMWARE_REVISION)).decode("ascii")
 
-    def _writeUUID(self, uuid, val):
-        if (self._debug):
-            print("[Calima] [W] %s = %s" % (uuid, self._bToStr(val)))
+    async def getSoftwareRevision(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_SOFTWARE_REVISION)).decode("ascii")
 
-        self.conn.getCharacteristics(uuid=uuid)[0].write(val, withResponse=True)
+    async def getManufacturer(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_MANUFACTURER_NAME)).decode(
+            "ascii"
+        )
 
-    def scanCharacteristics(self):
-        val = self.conn.getCharacteristics()
-        for ch in val:
-            if (ch.supportsRead()):
-                rd = ch.read()
-                print("[%s] %s (%s) = (%d) %s" % (hex(ch.getHandle()), ch.uuid.getCommonName(), ch.propertiesToString(), len(rd), self._bToStr(rd)))
-            else:
-                print("[%s] %s (%s)" % (hex(ch.getHandle()), ch.uuid.getCommonName(), ch.propertiesToString()))
+    async def setAuth(self, pin) -> None:
+        await self._write_uuid(CHARACTERISTIC_PIN_CODE, pack("<I", int(pin)))
 
-    # --- Generic GATT Characteristics
+    async def getAuth(self) -> int:
+        return unpack("<I", await self._read_uuid(CHARACTERISTIC_PIN_CODE))[0]
 
-    def getDeviceName(self):
-        return self._readHandle(0x3).decode('ascii')
+    async def checkAuth(self) -> bool:
+        return bool(unpack("<b", await self._read_uuid(CHARACTERISTIC_PIN_CONFIRMATION))[0])
 
-    def getModelNumber(self):
-        return self._readHandle(0xd).decode('ascii')
+    async def setAlias(self, name) -> None:
+        await self._write_uuid(
+            CHARACTERISTIC_FAN_DESCRIPTION,
+            pack("20s", bytearray(name, "utf-8")),
+        )
 
-    def getSerialNumber(self):
-        return self._readHandle(0xb).decode('ascii')
+    async def getAlias(self) -> str:
+        return (await self._read_uuid(CHARACTERISTIC_FAN_DESCRIPTION)).decode("utf-8")
 
-    def getHardwareRevision(self):
-        return self._readHandle(0xf).decode('ascii')
+    async def getIsClockSet(self) -> str:
+        return self._b_to_str(await self._read_uuid(CHARACTERISTIC_STATUS))
 
-    def getFirmwareRevision(self):
-        return self._readHandle(0x11).decode('ascii')
+    async def getFactorySettingsChanged(self) -> bool:
+        return unpack(
+            "<?", await self._read_uuid(CHARACTERISTIC_FACTORY_SETTINGS_CHANGED)
+        )[0]
 
-    def getSoftwareRevision(self):
-        return self._readHandle(0x13).decode('ascii')
+    async def getLed(self) -> str:
+        return self._b_to_str(await self._read_uuid(CHARACTERISTIC_LED))
 
-    def getManufacturer(self):
-        return self._readHandle(0x15).decode('ascii')
+    async def setTime(self, dayofweek, hour, minute, second) -> None:
+        await self._write_uuid(
+            CHARACTERISTIC_CLOCK, pack("<4B", dayofweek, hour, minute, second)
+        )
 
-    # --- Onwards to PAX characteristics
+    async def getTime(self) -> Time:
+        return Time(*unpack("<BBBB", await self._read_uuid(CHARACTERISTIC_CLOCK)))
 
-    def setAuth(self, pin):
-        self._writeUUID(CHARACTERISTIC_PIN_CODE, pack("<I", int(pin)))
+    async def setTimeToNow(self) -> None:
+        now = datetime.datetime.now()
+        await self.setTime(now.isoweekday(), now.hour, now.minute, now.second)
 
-    def checkAuth(self):
-        return bool(unpack('<I', self._readUUID(CHARACTERISTIC_PIN_CONFIRMATION)))
+    async def getReset(self):
+        return await self._read_uuid(CHARACTERISTIC_RESET)
 
-    def setAlias(self, name):
-        self._writeUUID(CHARACTERISTIC_FAN_DESCRIPTION, pack('20s', bytearray(name, 'utf-8')))
+    async def resetDevice(self):
+        await self._write_uuid(CHARACTERISTIC_RESET, pack("<I", 120))
 
-    def getAlias(self):
-        return self._readUUID(CHARACTERISTIC_FAN_DESCRIPTION).decode('utf-8')
+    async def resetValues(self):
+        await self._write_uuid(CHARACTERISTIC_RESET, pack("<I", 85))
 
-    def getIsClockSet(self):
-        return self._bToStr(self._readUUID(CHARACTERISTIC_STATUS))
+    async def getBoostMode(self) -> BoostMode:
+        return BoostMode(*unpack("<BHH", await self._read_uuid(CHARACTERISTIC_BOOST)))
 
-    def getState(self):
-        # Short Short Short Short    Byte Short Byte
-        # Hum   Temp  Light FanSpeed Mode Tbd   Tbd
-        v = unpack('<4HBHB', self._readUUID(CHARACTERISTIC_SENSOR_DATA))
-        trigger = "No trigger"
-        if ((v[4] >> 4) & 1) == 1:
-            trigger = "Boost"
-        elif (v[4] & 3) == 1:
-            trigger = "Trickle ventilation"
-        elif (v[4] & 3) == 2:
-            trigger = "Light ventilation"
-        elif (v[4] & 3) == 3: # Note that the trigger might be active, but mode must be enabled to be activated
-            trigger = "Humidity ventilation"
-        return FanState(round(math.log2(v[0])*10, 2) if v[0] > 0 else 0, v[1]/4, v[2], v[3], trigger)
-
-    def getFactorySettingsChanged(self):
-        return unpack('<?', self._readUUID(CHARACTERISTIC_FACTORY_SETTINGS_CHANGED))
-
-    def getMode(self):
-        v = unpack('<B', self._readUUID(CHARACTERISTIC_MODE))
-        if v == 0:
-            return "MultiMode"
-        elif v == 1:
-            return "DraftShutterMode"
-        elif v == 2:
-            return "WallSwitchExtendedRuntimeMode"
-        elif v == 3:
-            return "WallSwitchNoExtendedRuntimeMode"
-        elif v == 4:
-            return "HeatDistributionMode"
-
-    def setFanSpeedSettings(self, humidity=2250, light=1625, trickle=1000):
-        for val in (humidity, light, trickle):
-            if (val % 25 != 0):
-                raise ValueError("Speeds should be multiples of 25")
-            if (val > 2500 or val < 0):
-                raise ValueError("Speeds must be between 0 and 2500 rpm")
-
-        self._writeUUID(CHARACTERISTIC_LEVEL_OF_FAN_SPEED, pack('<HHH', humidity, light, trickle))
-
-    def getFanSpeedSettings(self):
-        return Fanspeeds._make(unpack('<HHH', self._readUUID(CHARACTERISTIC_LEVEL_OF_FAN_SPEED)))
-
-    def setSensorsSensitivity(self, humidity, light):
-        if humidity > 3 or humidity < 0:
-            raise ValueError("Humidity sensitivity must be between 0-3")
-        if light > 3 or light < 0:
-            raise ValueError("Light sensitivity must be between 0-3")
-
-        value = pack('<4B', bool(humidity), humidity, bool(light), light)
-        self._writeUUID(CHARACTERISTIC_SENSITIVITY, value)
-
-    def getSensorsSensitivity(self):
-        # Hum Active | Hum Sensitivity | Light Active | Light Sensitivity
-        return Sensitivity._make(unpack('<4B', self._readUUID(CHARACTERISTIC_SENSITIVITY)))
-
-    def setLightSensorSettings(self, delayed, running):
-        if delayed not in (0, 5, 10):
-            raise ValueError("Delayed must be 0, 5 or 10 minutes")
-        if running not in (5, 10, 15, 30, 60):
-            raise ValueError("Running time must be 5, 10, 15, 30 or 60 minutes")
-
-        self._writeUUID(CHARACTERISTIC_TIME_FUNCTIONS, pack('<2B', delayed, running))
-
-    def getLightSensorSettings(self):
-        return LightSensorSettings._make(unpack('<2B', self._readUUID(CHARACTERISTIC_TIME_FUNCTIONS)))
-
-    def getHeatDistributor(self):
-        return HeatDistributorSettings._make(unpack('<BHH', self._readUUID(CHARACTERISTIC_TEMP_HEAT_DISTRIBUTOR)))
-
-    def setBoostMode(self, on, speed, seconds):
+    async def setBoostMode(self, on, speed, seconds) -> None:
         if speed % 25:
             raise ValueError("Speed must be a multiple of 25")
         if not on:
             speed = 0
             seconds = 0
 
-        self._writeUUID(CHARACTERISTIC_BOOST, pack('<BHH', on, speed, seconds))
+        await self._write_uuid(CHARACTERISTIC_BOOST, pack("<BHH", on, speed, seconds))
 
-    def getBoostMode(self):
-        return BoostMode._make(unpack('<BHH', self._readUUID(CHARACTERISTIC_BOOST)))
+    async def getMode(self) -> str:
+        value = unpack("<B", await self._read_uuid(CHARACTERISTIC_MODE))[0]
+        modes = {
+            0: "MultiMode",
+            1: "DraftShutterMode",
+            2: "WallSwitchExtendedRuntimeMode",
+            3: "WallSwitchNoExtendedRuntimeMode",
+            4: "HeatDistributionMode",
+        }
+        return modes.get(value, "Unknown: " + str(value))
 
-    def getLed(self):
-        return self._bToStr(self._readUUID(CHARACTERISTIC_LED))
+    async def getState(self) -> FanState:
+        value = unpack("<4HBHB", await self._read_uuid(CHARACTERISTIC_SENSOR_DATA))
+        trigger = "No trigger"
+        if ((value[4] >> 4) & 1) == 1:
+            trigger = "Boost"
+        elif ((value[4] >> 6) & 3) == 3:
+            trigger = "Switch"
+        elif (value[4] & 3) == 1:
+            trigger = "Trickle ventilation"
+        elif (value[4] & 3) == 2:
+            trigger = "Light ventilation"
+        elif (value[4] & 3) == 3:
+            trigger = "Humidity ventilation"
 
-    def setAutomaticCycles(self, setting):
+        return FanState(
+            round(math.log2(value[0] - 30) * 10, 2) if value[0] > 30 else 0,
+            value[1] / 4 - 2.6,
+            value[2],
+            value[3],
+            trigger,
+        )
+
+    async def getAutomaticCycles(self) -> int:
+        return unpack("<B", await self._read_uuid(CHARACTERISTIC_AUTOMATIC_CYCLES))[0]
+
+    async def setAutomaticCycles(self, setting: int) -> None:
         if setting < 0 or setting > 3:
             raise ValueError("Setting must be between 0-3")
+        await self._write_uuid(CHARACTERISTIC_AUTOMATIC_CYCLES, pack("<B", setting))
 
-        self._writeUUID(CHARACTERISTIC_AUTOMATIC_CYCLES, pack('<B', setting))
+    async def getFanSpeedSettings(self) -> Fanspeeds:
+        return Fanspeeds(
+            *unpack("<HHH", await self._read_uuid(CHARACTERISTIC_LEVEL_OF_FAN_SPEED))
+        )
 
-    def getAutomaticCycles(self):
-        return unpack('<B', self._readUUID(CHARACTERISTIC_AUTOMATIC_CYCLES))[0]
+    async def setFanSpeedSettings(
+        self, humidity=2250, light=1625, trickle=1000
+    ) -> None:
+        for value in (humidity, light, trickle):
+            if value % 25 != 0:
+                raise ValueError("Speeds should be multiples of 25")
+            if value > 2500 or value < 0:
+                raise ValueError("Speeds must be between 0 and 2500 rpm")
 
-    def setTime(self, dayofweek, hour, minute, second):
-        self._writeUUID(CHARACTERISTIC_CLOCK, pack('<4B', dayofweek, hour, minute, second))
+        await self._write_uuid(
+            CHARACTERISTIC_LEVEL_OF_FAN_SPEED,
+            pack("<HHH", humidity, light, trickle),
+        )
 
-    def getTime(self):
-        return Time._make(unpack('<BBBB', self._readUUID(CHARACTERISTIC_CLOCK)))
+    async def getHeatDistributor(self) -> HeatDistributorSettings:
+        return HeatDistributorSettings(
+            *unpack(
+                "<BHH", await self._read_uuid(CHARACTERISTIC_TEMP_HEAT_DISTRIBUTOR)
+            )
+        )
 
-    def setTimeToNow(self):
-        now = datetime.datetime.now()
-        self.setTime(now.isoweekday(), now.hour, now.minute, now.second)
+    async def setHeatDistributor(
+        self, temperatureLimit, fanSpeedBelow, fanSpeedAbove
+    ) -> None:
+        await self._write_uuid(
+            CHARACTERISTIC_TEMP_HEAT_DISTRIBUTOR,
+            pack("<BHH", temperatureLimit, fanSpeedBelow, fanSpeedAbove),
+        )
 
-    def setSilentHours(self, on, startingHours, startingMinutes, endingHours, endingMinutes):
-        if startingHours < 0 or startingHours > 23:
-            raise ValueError("Starting hour is an invalid number")
-        if endingHours < 0 or endingHours > 23:
-            raise ValueError("Ending hour is an invalid number")
-        if startingMinutes < 0 or startingMinutes > 59:
-            raise ValueError("Starting minute is an invalid number")
-        if endingMinutes < 0 or endingMinutes > 59:
-            raise ValueError("Ending minute is an invalid number")
+    async def getSilentHours(self) -> SilentHours:
+        return SilentHours(
+            *unpack("<5B", await self._read_uuid(CHARACTERISTIC_NIGHT_MODE))
+        )
 
-        value = pack('<5B', int(on),
-                     startingHours, startingMinutes,
-                     endingHours, endingMinutes)
-        self._writeUUID(CHARACTERISTIC_NIGHT_MODE, value)
+    async def setSilentHours(
+        self, on: bool, startingTime: datetime.time, endingTime: datetime.time
+    ) -> None:
+        await self._write_uuid(
+            CHARACTERISTIC_NIGHT_MODE,
+            pack(
+                "<5B",
+                int(on),
+                startingTime.hour,
+                startingTime.minute,
+                endingTime.hour,
+                endingTime.minute,
+            ),
+        )
 
-    def getSilentHours(self):
-        return SilentHours._make(unpack('<5B', self._readUUID(CHARACTERISTIC_NIGHT_MODE)))
+    async def getTrickleDays(self) -> TrickleDays:
+        return TrickleDays(
+            *unpack("<2B", await self._read_uuid(CHARACTERISTIC_BASIC_VENTILATION))
+        )
 
-    def setTrickleDays(self, weekdays, weekends):
-        self._writeUUID(CHARACTERISTIC_BASIC_VENTILATION, pack('<2B', weekdays, weekends))
+    async def setTrickleDays(self, weekdays, weekends) -> None:
+        await self._write_uuid(
+            CHARACTERISTIC_BASIC_VENTILATION, pack("<2B", weekdays, weekends)
+        )
 
-    def getTrickleDays(self):
-        return TrickleDays._make(unpack('<2B', self._readUUID(CHARACTERISTIC_BASIC_VENTILATION)))
+    async def getLightSensorSettings(self) -> LightSensorSettings:
+        return LightSensorSettings(
+            *unpack("<2B", await self._read_uuid(CHARACTERISTIC_TIME_FUNCTIONS))
+        )
 
-    def getReset(self): # Should be write
-        return self._readUUID(CHARACTERISTIC_RESET)
+    async def setLightSensorSettings(self, delayed, running) -> None:
+        if delayed not in (0, 5, 10):
+            raise ValueError("Delayed must be 0, 5 or 10 minutes")
+        if running not in (5, 10, 15, 30, 60):
+            raise ValueError("Running time must be 5, 10, 15, 30 or 60 minutes")
+        await self._write_uuid(CHARACTERISTIC_TIME_FUNCTIONS, pack("<2B", delayed, running))
 
-    def resetDevice(self): # Dangerous
-        self._writeUUID(CHARACTERISTIC_RESET, pack('<I', 120))
+    async def getSensorsSensitivity(self) -> Sensitivity:
+        sensitivity = Sensitivity(
+            *unpack("<4B", await self._read_uuid(CHARACTERISTIC_SENSITIVITY))
+        )
+        return Sensitivity(
+            sensitivity.HumidityOn,
+            sensitivity.Humidity if sensitivity.HumidityOn else 0,
+            sensitivity.LightOn,
+            sensitivity.Light if sensitivity.LightOn else 0,
+        )
 
-    def resetValues(self): # Danguerous
-        self._writeUUID(CHARACTERISTIC_RESET, pack('<I', 85))
+    async def setSensorsSensitivity(self, humidity, light) -> None:
+        if humidity > 3 or humidity < 0:
+            raise ValueError("Humidity sensitivity must be between 0-3")
+        if light > 3 or light < 0:
+            raise ValueError("Light sensitivity must be between 0-3")
+        await self._write_uuid(
+            CHARACTERISTIC_SENSITIVITY,
+            pack("<4B", bool(humidity), humidity, bool(light), light),
+        )

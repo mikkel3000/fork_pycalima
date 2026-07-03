@@ -17,5 +17,4 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from .Calima import Calima;
-from .Calima import FindCalimas;
+from .Calima import Calima

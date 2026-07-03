@@ -23,9 +23,9 @@ def readme():
     with open('README.rst') as f:
         return f.read()
 
-setup(name='Calima',
-      version='2.0.0',
-      description='Python interface for Pax Calima Fan',
+setup(name='pycalima',
+      version='3.0.0',
+      description='Async protocol helpers for Pax Calima-like BLE fans',
       long_description=readme(),
       keywords='pax calima fan bluetooth ble',
       author='Patrick Wadström',
@@ -33,8 +33,5 @@ setup(name='Calima',
       url='https://github.com/patricke94/pycalima',
       license='Apache 2.0',
       packages=['pycalima'],
-      install_requires=['bluepy'],
-      entry_points ={
-        'console_scripts': ['calima=pycalima.cmdline:main'],
-      },
+      install_requires=[],
       include_package_data=True)
